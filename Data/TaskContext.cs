@@ -12,5 +12,5 @@ using TaskManagement_API.Models;
         {
         }
 
-        public DbSet<MyTask> Task { get; set; } = default!;
+        public DbSet<TaskModel> Task { get; set; } = default!;
     }

@@ -2,7 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 namespace TaskManagement_API.Repositories
 {
-    public class TaskRepository : IRepository<MyTask>
+    public class TaskRepository : IRepository<TaskModel>
     {
         private readonly TaskContext _context;
 
@@ -11,29 +11,31 @@ namespace TaskManagement_API.Repositories
             _context = context;
         }
 
-        public async Task<MyTask> GetByIdAsync(int id)
+        public async Task<TaskModel> GetByIdAsync(int id)
         {
             return await _context.Task.FirstOrDefaultAsync(x => x.Id == id);
         }
 
-        public async Task<IEnumerable<MyTask>> GetAllAsync()
+        public async Task<IEnumerable<TaskModel>> GetAllAsync(CancellationToken cancellationToken)
         {
-            return await _context.Task.ToListAsync();
+            var query = _context.Task; 
+
+            return await query.ToListAsync(cancellationToken);
         }
 
-        public async Task AddAsync(MyTask myTask)
+        public async Task AddAsync(TaskModel myTask)
         {
             await _context.Task.AddAsync(myTask);
             await _context.SaveChangesAsync();
         }
 
-        public async Task UpdateAsync(MyTask myTask)
+        public async Task UpdateAsync(TaskModel myTask)
         {
             _context.Task.Update(myTask);
             await _context.SaveChangesAsync();
         }
 
-        public async Task RemoveAsync(MyTask myTask)
+        public async Task RemoveAsync(TaskModel myTask)
         {
             _context.Task.Remove(myTask);
             await _context.SaveChangesAsync();

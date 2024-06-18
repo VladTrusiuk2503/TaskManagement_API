@@ -18,7 +18,7 @@ namespace TaskManagement_API.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "7.0.16");
 
-            modelBuilder.Entity("TaskManagement_API.Models.MyTask", b =>
+            modelBuilder.Entity("TaskManagement_API.Models.TaskModel", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()

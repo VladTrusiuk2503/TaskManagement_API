@@ -1,11 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Http;
+﻿using AutoMapper;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Build.Framework;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using System.ComponentModel.DataAnnotations;
+using System.Data.Common;
+using TaskManagement_API.DTOs;
 using TaskManagement_API.Models;
 using TaskManagement_API.Repositories;
 
@@ -15,53 +14,70 @@ namespace TaskManagement_API.Controllers
     [Route("[controller]")]
     public class TasksController : ControllerBase
     {
-        private readonly TaskRepository _TaskRepository;
+        private readonly ILogger<TasksController> _logger;
+        private readonly TaskRepository _taskRepository;
+        private readonly IMemoryCache _cache;
+        private readonly IMapper _mapper;
 
-        public TasksController(TaskRepository taskRepository)
+        public TasksController(TaskRepository taskRepository, ILogger<TasksController> logger, IMemoryCache cache, IMapper mapper)
         {
-            _TaskRepository = taskRepository;
+            _taskRepository = taskRepository;
+            _logger = logger;
+            _cache = cache;
+            _mapper = mapper;
         }
+
 
         [HttpGet]
-        public async Task<IActionResult> GetTasks()
+        public async Task<IActionResult> GetAllTasks([FromQuery] PaginationParams @params, CancellationToken cancellationToken = default)
         {
-            try
+            const string cacheKey = "AllTasks";
+
+            if (!_cache.TryGetValue(cacheKey, out List<TaskDto> cachedTasks))
             {
-                var tasks = await _TaskRepository.GetAllAsync();
-                return Ok(tasks);
-            }
-            catch (Exception)
-            {
-
-                return StatusCode(500, "An error occurred while retrieving tasks.");
-            }
-        }
-
-
-        [HttpGet("{id}")]
-        public async Task<IActionResult> GetbyID(int id)
-        {
-            try
-            {
-                var task = await _TaskRepository.GetByIdAsync(id);
-
-                if (task == null)
+                try
                 {
-                    return NotFound();
+
+                    var allTasks = await _taskRepository.GetAllAsync(cancellationToken);
+                    var paginagedtasks = allTasks.Skip((@params.Page - 1) * @params.ItemsPerPage)
+                                               .Take(@params.ItemsPerPage)
+                                               .ToList();
+
+                    var taskDtos = allTasks.Select(task => new TaskDto
+                    {
+                        Id = task.Id,
+                        Title = task.Title,
+                        Description = task.Description,
+                        IsCompleted = task.IsCompleted
+                    });
+
+                    // Set cache entry with expiration and eviction options
+                    _cache.Set(cacheKey, taskDtos, new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpiration = DateTimeOffset.UtcNow.AddMinutes(5),
+                        SlidingExpiration = TimeSpan.FromMinutes(2) // Evict if not accessed in 2 minutes
+                    });
+
+                    _logger.LogInformation("Tasks retrieved from repository and cached.");
+                    return Ok(taskDtos);
+
                 }
-
-                return Ok(task);
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "An error occurred while retrieving tasks.");
+                    return StatusCode(500, "An error occurred while retrieving tasks.");
+                }
             }
-            catch (Exception)
+            else
             {
-
-                return StatusCode(500, "An error occurred while retrieving the task by ID.");
+                _logger.LogInformation("Tasks retrieved from cache.");
+                return Ok(cachedTasks);
             }
         }
 
 
         [HttpPost]
-        public async Task<IActionResult> CreateTask([FromBody] MyTask myTask)
+        public async Task<IActionResult> CreateTask([FromBody] TaskModel taskModel)
         {
             try
             {
@@ -70,19 +86,32 @@ namespace TaskManagement_API.Controllers
                     return BadRequest(ModelState);
                 }
 
-                await _TaskRepository.AddAsync(myTask);
+                await _taskRepository.AddAsync(taskModel);
 
+                _logger.LogInformation($"Задача с ID {taskModel.Id} успешно создана.");
 
-                return CreatedAtAction(nameof(GetbyID), new { id = myTask.Id }, myTask);
+                string locationUrl = $"http://localhost:5101/tasks/{taskModel.Id}";
+                return CreatedAtRoute("default", new { controller = "Tasks", id = taskModel.Id }, taskModel);
             }
-            catch (Exception)
+            catch (ValidationException ex)
             {
+                _logger.LogError($"Ошибка валидации при создании задачи: {ex.Message}");
+                return BadRequest(ex.Message);
+            }
+            catch (DbException ex)
+            {
+                _logger.LogError($"Ошибка базы данных при создании задачи: {ex.Message}");
+                return StatusCode(500, "An error occurred while creating the task.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Неожиданная ошибка при создании задачи: {ex.Message}");
                 return StatusCode(500, "An error occurred while creating the task.");
             }
         }
 
         [HttpPut("{id}")]
-        public async Task<IActionResult> UpdateTask(int id, [FromBody] MyTask updatedTask)
+        public async Task<IActionResult> UpdateTask(int id, [FromBody] TaskModel updatedTask)
         {
             try
             {
@@ -91,46 +120,62 @@ namespace TaskManagement_API.Controllers
                     return BadRequest(ModelState);
                 }
 
-                var existingTask = await _TaskRepository.GetByIdAsync(id);
+                var existingTask = await _taskRepository.GetByIdAsync(id);
                 if (existingTask == null)
                 {
                     return NotFound();
                 }
 
+                _mapper.Map(updatedTask, existingTask);
 
-                existingTask.Title = updatedTask.Title;
-                existingTask.Description = updatedTask.Description;
+                await _taskRepository.UpdateAsync(existingTask);
+
+                return Ok(_mapper.Map<TaskDto>(existingTask));
 
 
-                await _TaskRepository.UpdateAsync(existingTask);
-
-                return NoContent();
             }
-            catch (Exception)
+            catch (DbUpdateException ex)
             {
-                return StatusCode(500, "An error occurred while updating the task.");
+                _logger.LogError(ex, "Невозможно обновить задачу из-за конфликта. TaskId: {taskId}", id);
+                return StatusCode(503, "Невозможно обновить задачу из-за конфликта. Попробуйте позже.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Произошла ошибка при обновлении задачи. TaskId: {taskId}", id);
+                return StatusCode(500, "Произошла ошибка при обновлении задачи.");
             }
         }
+
 
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteTask(int id)
         {
             try
             {
-                var taskToDelete = await _TaskRepository.GetByIdAsync(id);
+                var taskToDelete = await _taskRepository.GetByIdAsync(id);
 
                 if (taskToDelete == null)
                 {
                     return NotFound();
                 }
 
-                await _TaskRepository.RemoveAsync(taskToDelete);
-
-                return NoContent();
+                try
+                {
+                    await _taskRepository.RemoveAsync(taskToDelete);
+                    return NoContent();
+                }
+                catch (DbUpdateException ex)
+                {
+                    // Обработать конфликт базы данных
+                    _logger.LogError(ex, "Невозможно удалить задачу из-за конфликта. TaskId: {taskId}", id);
+                    return StatusCode(503, "Невозможно удалить задачу из-за конфликта. Попробуйте позже.");
+                }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                return StatusCode(500, "An error occurred while deleting the task.");
+                // Обработать другие ошибки
+                _logger.LogError(ex, "Произошла ошибка при удалении задачи. TaskId: {taskId}", id);
+                return StatusCode(500, "Произошла ошибка при удалении задачи.");
             }
         }
     }
